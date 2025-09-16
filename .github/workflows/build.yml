@@ -9,22 +9,28 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Docker login to NGC
-        run: |
-          echo "{\"auths\": {\"nvcr.io\": {\"auth\":\"$(echo -n \"$NGC_USERNAME:$NGC_API_KEY\" | base64 -w 0)\"}}}" > ~/.docker/config.json
-        env:
-          NGC_USERNAME: ${{ secrets.NGC_USERNAME }}
-          NGC_API_KEY: ${{ secrets.NGC_API_KEY }}
+      # NGC login
+      - name: Login to NVIDIA NGC (nvcr.io)
+        uses: docker/login-action@v3
+        with:
+          registry: nvcr.io
+          username: ${{ secrets.NGC_USERNAME }}   # -> $oauthtoken
+          password: ${{ secrets.NGC_API_KEY }}    # -> your API key
 
-      - name: Docker login to Docker Hub
+      # Docker Hub login
+      - name: Login to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      # (optional) quick sanity check that NGC auth works
+      - name: Pull Triton base to verify NGC auth
+        run: docker pull nvcr.io/nvidia/tritonserver:24.09-py3
+
+      # Build & push
       - name: Build and Push
         uses: docker/build-push-action@v6
         with:
@@ -33,4 +39,3 @@ jobs:
           tags: ${{ secrets.DOCKERHUB_USERNAME }}/runpod-triton-pytorch:latest
           build-args: |
             TRITON_VERSION=24.09
-
