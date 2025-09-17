@@ -14,10 +14,14 @@ set -euo pipefail
 
 # Jupyter settings
 : "${JUPYTER_PORT:=8888}"
-# NOTE: We ignore JUPYTER_TOKEN/PASSWORD to force no-auth startup
+# NOTE: Force no-auth for Jupyter (no token/password)
+# If you want auth later, add vars and flags here.
 
 # Extra args to Triton (verbosity etc.)
 : "${TRITON_EXTRA_ARGS:=--log-verbose=1}"
+
+# Optional: verbose fallback for port checks (default: false)
+: "${PORTCHECK_VERBOSE:=false}"
 
 # -----------------------------
 # Helpers
@@ -28,17 +32,25 @@ port_free() {
   # Return 0 if port is free, 1 if taken. Port "0" means disabled.
   local port="$1"
   [[ "$port" == "0" ]] && return 1
+
   if command -v ss >/dev/null 2>&1; then
     ! ss -ltn "( sport = :$port )" | grep -q ":$port"
   elif command -v netstat >/dev/null 2>&1; then
     ! netstat -ltn | grep -q ":$port "
   else
-    # Fallback: try to open TCP socket; if succeeds, it was listening
-    (exec 3<>/dev/tcp/127.0.0.1/$port) >/dev/null 2>&1 && { exec 3>&- 3<&-; return 1; } || return 0
+    # Fallback: try to open a TCP socket.
+    # - Quiet by default (redirect to /dev/null)
+    # - If PORTCHECK_VERBOSE=true, show the attempt result
+    if [[ "${PORTCHECK_VERBOSE,,}" == "true" ]]; then
+      log "Fallback port check via /dev/tcp for :${port}"
+      (exec 3<>/dev/tcp/127.0.0.1/"$port") && { exec 3>&- 3<&-; return 1; } || return 0
+    else
+      (exec 3<>/dev/tcp/127.0.0.1/"$port") >/dev/null 2>&1 && { exec 3>&- 3<&-; return 1; } || return 0
+    fi
   fi
 }
 
-# Ensure model repo exists
+# Ensure model repo exists (persists on RunPod volume)
 mkdir -p "${MODEL_REPO}"
 
 # Build Triton args
@@ -53,7 +65,7 @@ if port_free "${TRITON_HTTP_PORT}"; then
   TRITON_ARGS+=("--http-port=${TRITON_HTTP_PORT}")
 else
   log "ERROR: HTTP port ${TRITON_HTTP_PORT} is busy. Aborting."
-  ss -ltn || true
+  { ss -ltn || netstat -ltn || true; } 2>/dev/null
   exit 1
 fi
 
