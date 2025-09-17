@@ -8,14 +8,13 @@ set -euo pipefail
 : "${RUN_JUPYTER:=true}"
 
 # Triton ports (HTTP/gRPC/metrics)
-: "${TRITON_HTTP_PORT:=8000}"   # required; don’t set to 0
-: "${TRITON_GRPC_PORT:=8001}"   # set to 0 to disable
-: "${TRITON_METRICS_PORT:=8002}"# set to 0 to disable
+: "${TRITON_HTTP_PORT:=8000}"    # required; don’t set to 0
+: "${TRITON_GRPC_PORT:=8001}"    # set to 0 to disable
+: "${TRITON_METRICS_PORT:=8002}" # set to 0 to disable
 
 # Jupyter settings
 : "${JUPYTER_PORT:=8888}"
-: "${JUPYTER_TOKEN:=}"          # empty = no token
-: "${JUPYTER_PASSWORD:=}"       # empty = no password sha1
+# NOTE: We ignore JUPYTER_TOKEN/PASSWORD to force no-auth startup
 
 # Extra args to Triton (verbosity etc.)
 : "${TRITON_EXTRA_ARGS:=--log-verbose=1}"
@@ -92,10 +91,10 @@ start_triton() {
 
 start_jupyter() {
   if [[ "${RUN_JUPYTER,,}" == "true" ]]; then
-    local args=(--ip=0.0.0.0 --port="${JUPYTER_PORT}" --allow-root --no-browser)
-    [[ -n "${JUPYTER_TOKEN}" ]] && args+=(--NotebookApp.token="${JUPYTER_TOKEN}")
-    [[ -n "${JUPYTER_PASSWORD}" ]] && args+=(--NotebookApp.password="${JUPYTER_PASSWORD}")
-    log "Starting JupyterLab on :${JUPYTER_PORT}"
+    # Force no token and no password for JupyterLab
+    local args=(--ip=0.0.0.0 --port="${JUPYTER_PORT}" --allow-root --no-browser \
+                --NotebookApp.token='' --NotebookApp.password='')
+    log "Starting JupyterLab on :${JUPYTER_PORT} (no auth)"
     jupyter lab "${args[@]}" &
     JUPYTER_PID=$!
     log "Jupyter PID: ${JUPYTER_PID}"
