@@ -17,14 +17,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Python tools:
 # - Triton client HTTP/gRPC
-# - JupyterLab
-# - ipykernel (register default kernel so "New Notebook → Python 3" works)
+# - JupyterLab + jupyter_server + classic notebook server
+# - ipykernel (register kernel under sys-prefix so Jupyter finds it)
 # - pillow/requests: handy libs for demos
 RUN python3 -m pip install --no-cache-dir --upgrade pip && \
     pip3 install --no-cache-dir \
       "tritonclient[http,grpc]" \
-      jupyterlab ipykernel pillow requests && \
-    python3 -m ipykernel install --user --name=python3 --display-name="Python 3" && \
+      jupyterlab jupyter_server notebook ipykernel \
+      pillow requests && \
+    python3 -m ipykernel install --sys-prefix --name=python3 --display-name="Python 3" && \
     pip cache purge
 
 # Workspace (/workspace is the persistent volume on RunPod)
