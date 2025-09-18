@@ -14,12 +14,16 @@ set -euo pipefail
 
 # Jupyter settings
 : "${JUPYTER_PORT:=8888}"
-# Auth controls (empty = no auth)
-: "${JUPYTER_TOKEN:=}"
-: "${JUPYTER_PASSWORD:=}"
+
+# Auth controls
+# Leave these EMPTY to disable auth completely.
+: "${JUPYTER_TOKEN:=}"                 # maps to ServerApp.token
+: "${JUPYTER_PASSWORD:=}"              # maps to ServerApp.password (SHA1 if set)
+: "${JUPYTER_IDENTITY_TOKEN:=}"        # maps to IdentityProvider.token (new in Jupyter Server 2)
+
 # Proxy/CORS & XSRF (tuned for RunPod)
 : "${JUPYTER_ALLOW_ORIGIN_PAT:=https?://.*\.proxy\.runpod\.net}"
-: "${JUPYTER_DISABLE_XSRF:=true}"   # set to "false" to re-enable XSRF
+: "${JUPYTER_DISABLE_XSRF:=true}"      # set "false" to re-enable XSRF
 
 # Extra args to Triton (verbosity etc.)
 : "${TRITON_EXTRA_ARGS:=--log-verbose=1}"
@@ -105,7 +109,7 @@ start_triton() {
 
 start_jupyter() {
   if [[ "${RUN_JUPYTER,,}" == "true" ]]; then
-    # Prefer ServerApp flags (modern Jupyter). Allow RunPod proxy origin; XSRF toggleable.
+    # Prefer ServerApp flags (modern Jupyter). Keep classic NotebookApp flags for compatibility.
     local args=(
       --ServerApp.ip=0.0.0.0
       --ServerApp.port="${JUPYTER_PORT}"
@@ -119,25 +123,47 @@ start_jupyter() {
       --no-browser
     )
 
-    # Auth: empty token/password means no-auth
+    # ---------- Auth handling ----------
+    # ServerApp.token (classic)
     if [[ -n "${JUPYTER_TOKEN}" ]]; then
       args+=(--ServerApp.token="${JUPYTER_TOKEN}")
     else
       args+=(--ServerApp.token='')
     fi
+
+    # ServerApp.password (classic)
     if [[ -n "${JUPYTER_PASSWORD}" ]]; then
-      # Expect a hashed password if supplied; empty means none
       args+=(--ServerApp.password="${JUPYTER_PASSWORD}")
     else
       args+=(--ServerApp.password='')
     fi
 
+    # IdentityProvider.token (new path in Jupyter Server 2)
+    if [[ -n "${JUPYTER_IDENTITY_TOKEN}" ]]; then
+      args+=(--IdentityProvider.token="${JUPYTER_IDENTITY_TOKEN}")
+    else
+      args+=(--IdentityProvider.token='')
+    fi
+
+    # Also set NotebookApp.* for extra compatibility (ignored by modern server but harmless)
+    if [[ -n "${JUPYTER_TOKEN}" ]]; then
+      args+=(--NotebookApp.token="${JUPYTER_TOKEN}")
+    else
+      args+=(--NotebookApp.token='')
+    fi
+    if [[ -n "${JUPYTER_PASSWORD}" ]]; then
+      args+=(--NotebookApp.password="${JUPYTER_PASSWORD}")
+    else
+      args+=(--NotebookApp.password='')
+    fi
+    # -----------------------------------
+
     # XSRF toggle (disabled by default for RunPod proxy)
     if [[ "${JUPYTER_DISABLE_XSRF,,}" == "true" ]]; then
       args+=(--ServerApp.disable_check_xsrf=True)
-      log "Starting JupyterLab on :${JUPYTER_PORT} (no auth by default; CORS open to RunPod proxy; XSRF disabled)"
+      log "Starting JupyterLab on :${JUPYTER_PORT} (no auth if envs empty; CORS open to RunPod; XSRF disabled)"
     else
-      log "Starting JupyterLab on :${JUPYTER_PORT} (CORS open to RunPod proxy; XSRF enabled)"
+      log "Starting JupyterLab on :${JUPYTER_PORT} (CORS open to RunPod; XSRF enabled)"
     fi
 
     # Launch
