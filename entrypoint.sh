@@ -1,36 +1,32 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# -----------------------------
+# =============================
 # Defaults (override via env)
-# -----------------------------
+# =============================
 : "${MODEL_REPO:=/workspace/models}"
 : "${RUN_JUPYTER:=true}"
 
-# Triton ports (HTTP required)
+# Triton ports (HTTP is required)
 : "${TRITON_HTTP_PORT:=8000}"     # must not be 0
 : "${TRITON_GRPC_PORT:=8001}"     # set 0 to disable
 : "${TRITON_METRICS_PORT:=8002}"  # set 0 to disable
 
-# Jupyter settings
+# Jupyter
 : "${JUPYTER_PORT:=8888}"
-
-# Auth controls — leave EMPTY to fully disable auth
-: "${JUPYTER_TOKEN:=}"                 # ServerApp.token
-: "${JUPYTER_PASSWORD:=}"              # ServerApp.password (sha1 if used)
-: "${JUPYTER_IDENTITY_TOKEN:=}"        # IdentityProvider.token (Jupyter Server 2)
+: "${JUPYTER_BASE_URL:=/}"
 
 # CORS/Proxy/XSRF — tuned for RunPod *.proxy.runpod.net
 : "${JUPYTER_ALLOW_ORIGIN_PAT:=https?://.*\.proxy\.runpod\.net}"
-: "${JUPYTER_DISABLE_XSRF:=true}"
+: "${JUPYTER_DISABLE_XSRF:=true}"   # leave true for RunPod proxy
 
-# Extra args to Triton (verbosity, etc.)
+# Extra args to Triton
 : "${TRITON_EXTRA_ARGS:=--log-verbose=1}"
 
 log() { echo "[entrypoint] $*"; }
 
 port_free() {
-  # Return 0 if port is free, 1 if busy; "0" means feature disabled.
+  # Return 0 if port is free, 1 if busy; "0" means disabled.
   local port="$1"
   [[ "$port" == "0" ]] && return 1
   if command -v ss >/dev/null 2>&1; then
@@ -43,7 +39,9 @@ port_free() {
 # Ensure model repo exists
 mkdir -p "${MODEL_REPO}"
 
-# ---- Build Triton args ----
+# -----------------------------
+# Triton launcher
+# -----------------------------
 TRITON_ARGS=( "--model-repository=${MODEL_REPO}" ${TRITON_EXTRA_ARGS} )
 
 # HTTP (required)
@@ -91,53 +89,40 @@ start_triton() {
   log "Triton PID: ${TRITON_PID}"
 }
 
+# -----------------------------
+# Jupyter launcher (NO AUTH)
+# -----------------------------
 start_jupyter() {
   if [[ "${RUN_JUPYTER,,}" != "true" ]]; then
     log "RUN_JUPYTER=false — skipping Jupyter."
     return
   fi
 
-  # Build Jupyter args (modern ServerApp flags)
+  # Hard-force NO token/password regardless of env (bulletproof)
   local args=(
     --ServerApp.ip=0.0.0.0
     --ServerApp.port="${JUPYTER_PORT}"
     --ServerApp.allow_root=True
     --ServerApp.root_dir=/workspace
     --ServerApp.preferred_dir=/workspace
-    --ServerApp.base_url=/
+    --ServerApp.base_url="${JUPYTER_BASE_URL}"
     --ServerApp.trust_xheaders=True
     --ServerApp.allow_remote_access=True
     --ServerApp.allow_origin_pat="${JUPYTER_ALLOW_ORIGIN_PAT}"
+    --ServerApp.token=
+    --ServerApp.password=
+    --IdentityProvider.token=
+    --NotebookApp.token=
+    --NotebookApp.password=
     --no-browser
   )
 
-  # Auth OFF unless you explicitly set envs
-  if [[ -n "${JUPYTER_TOKEN}" ]]; then
-    args+=(--ServerApp.token="${JUPYTER_TOKEN}")
-  else
-    args+=(--ServerApp.token=)
-  fi
-  if [[ -n "${JUPYTER_PASSWORD}" ]]; then
-    args+=(--ServerApp.password="${JUPYTER_PASSWORD}")
-  else
-    args+=(--ServerApp.password=)
-  fi
-  if [[ -n "${JUPYTER_IDENTITY_TOKEN}" ]]; then
-    args+=(--IdentityProvider.token="${JUPYTER_IDENTITY_TOKEN}")
-  else
-    args+=(--IdentityProvider.token=)
-  fi
-
-  # Compatibility flags (ignored by modern server but harmless)
-  [[ -n "${JUPYTER_TOKEN}"    ]] && args+=(--NotebookApp.token="${JUPYTER_TOKEN}")    || args+=(--NotebookApp.token=)
-  [[ -n "${JUPYTER_PASSWORD}" ]] && args+=(--NotebookApp.password="${JUPYTER_PASSWORD}") || args+=(--NotebookApp.password=)
-
-  # Disable XSRF for proxy friendliness (prevents 403/cross-origin websocket issues)
+  # Disable XSRF to avoid RunPod proxy websocket/cross-origin issues
   if [[ "${JUPYTER_DISABLE_XSRF,,}" == "true" ]]; then
     args+=(--ServerApp.disable_check_xsrf=True)
-    log "Starting JupyterLab :${JUPYTER_PORT} — auth disabled, CORS open to RunPod, XSRF disabled."
+    log "Starting JupyterLab :${JUPYTER_PORT} — NO AUTH, CORS open to RunPod, XSRF disabled."
   else
-    log "Starting JupyterLab :${JUPYTER_PORT} — CORS open to RunPod, XSRF enabled."
+    log "Starting JupyterLab :${JUPYTER_PORT} — NO AUTH, XSRF enabled."
   fi
 
   # Launch
@@ -146,6 +131,9 @@ start_jupyter() {
   log "Jupyter PID: ${JUPYTER_PID}"
 }
 
+# -----------------------------
+# Entrypoint modes
+# -----------------------------
 case "${1:-start-all}" in
   start-triton)  start_triton;  wait "${TRITON_PID}";;
   start-jupyter) start_jupyter; wait "${JUPYTER_PID}";;
