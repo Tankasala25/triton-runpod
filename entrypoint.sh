@@ -7,71 +7,55 @@ set -euo pipefail
 : "${MODEL_REPO:=/workspace/models}"
 : "${RUN_JUPYTER:=true}"
 
-# Triton ports (HTTP/gRPC/metrics)
-: "${TRITON_HTTP_PORT:=8000}"    # required; don’t set to 0
-: "${TRITON_GRPC_PORT:=8001}"    # set to 0 to disable
-: "${TRITON_METRICS_PORT:=8002}" # set to 0 to disable
+# Triton ports (HTTP required)
+: "${TRITON_HTTP_PORT:=8000}"     # must not be 0
+: "${TRITON_GRPC_PORT:=8001}"     # set 0 to disable
+: "${TRITON_METRICS_PORT:=8002}"  # set 0 to disable
 
 # Jupyter settings
 : "${JUPYTER_PORT:=8888}"
 
-# Auth controls
-# Leave these EMPTY to disable auth completely.
-: "${JUPYTER_TOKEN:=}"                 # maps to ServerApp.token
-: "${JUPYTER_PASSWORD:=}"              # maps to ServerApp.password (SHA1 if set)
-: "${JUPYTER_IDENTITY_TOKEN:=}"        # maps to IdentityProvider.token (new in Jupyter Server 2)
+# Auth controls — leave EMPTY to fully disable auth
+: "${JUPYTER_TOKEN:=}"                 # ServerApp.token
+: "${JUPYTER_PASSWORD:=}"              # ServerApp.password (sha1 if used)
+: "${JUPYTER_IDENTITY_TOKEN:=}"        # IdentityProvider.token (Jupyter Server 2)
 
-# Proxy/CORS & XSRF (tuned for RunPod)
+# CORS/Proxy/XSRF — tuned for RunPod *.proxy.runpod.net
 : "${JUPYTER_ALLOW_ORIGIN_PAT:=https?://.*\.proxy\.runpod\.net}"
-: "${JUPYTER_DISABLE_XSRF:=true}"      # set "false" to re-enable XSRF
+: "${JUPYTER_DISABLE_XSRF:=true}"
 
-# Extra args to Triton (verbosity etc.)
+# Extra args to Triton (verbosity, etc.)
 : "${TRITON_EXTRA_ARGS:=--log-verbose=1}"
 
-# Optional: verbose fallback for port checks (default: false)
-: "${PORTCHECK_VERBOSE:=false}"
-
-# -----------------------------
-# Helpers
-# -----------------------------
 log() { echo "[entrypoint] $*"; }
 
 port_free() {
-  # Return 0 if port is free, 1 if taken. Port "0" means disabled.
+  # Return 0 if port is free, 1 if busy; "0" means feature disabled.
   local port="$1"
   [[ "$port" == "0" ]] && return 1
-
   if command -v ss >/dev/null 2>&1; then
     ! ss -ltn "( sport = :$port )" | grep -q ":$port"
-  elif command -v netstat >/dev/null 2>&1; then
-    ! netstat -ltn | grep -q ":$port "
   else
-    # Fallback: try to open a TCP socket.
-    if [[ "${PORTCHECK_VERBOSE,,}" == "true" ]]; then
-      log "Fallback port check via /dev/tcp for :${port}"
-      (exec 3<>/dev/tcp/127.0.0.1/"$port") && { exec 3>&- 3<&-; return 1; } || return 0
-    else
-      (exec 3<>/dev/tcp/127.0.0.1/"$port") >/dev/null 2>&1 && { exec 3>&- 3<&-; return 1; } || return 0
-    fi
+    ! netstat -ltn 2>/dev/null | grep -q ":$port "
   fi
 }
 
-# Ensure model repo exists (persists on RunPod volume)
+# Ensure model repo exists
 mkdir -p "${MODEL_REPO}"
 
-# Build Triton args
+# ---- Build Triton args ----
 TRITON_ARGS=( "--model-repository=${MODEL_REPO}" ${TRITON_EXTRA_ARGS} )
 
 # HTTP (required)
 if [[ "${TRITON_HTTP_PORT}" == "0" ]]; then
-  log "ERROR: HTTP port cannot be 0; Triton HTTP is required."
+  log "ERROR: TRITON_HTTP_PORT cannot be 0."
   exit 1
 fi
 if port_free "${TRITON_HTTP_PORT}"; then
   TRITON_ARGS+=("--http-port=${TRITON_HTTP_PORT}")
 else
   log "ERROR: HTTP port ${TRITON_HTTP_PORT} is busy. Aborting."
-  { ss -ltn || netstat -ltn || true; } 2>/dev/null
+  (ss -ltn || netstat -ltn || true) 2>/dev/null
   exit 1
 fi
 
@@ -108,71 +92,58 @@ start_triton() {
 }
 
 start_jupyter() {
-  if [[ "${RUN_JUPYTER,,}" == "true" ]]; then
-    # Prefer ServerApp flags (modern Jupyter). Keep classic NotebookApp flags for compatibility.
-    local args=(
-      --ServerApp.ip=0.0.0.0
-      --ServerApp.port="${JUPYTER_PORT}"
-      --ServerApp.allow_root=True
-      --ServerApp.root_dir=/workspace
-      --ServerApp.preferred_dir=/workspace
-      --ServerApp.base_url='/'
-      --ServerApp.trust_xheaders=True
-      --ServerApp.allow_remote_access=True
-      --ServerApp.allow_origin_pat="${JUPYTER_ALLOW_ORIGIN_PAT}"
-      --no-browser
-    )
-
-    # ---------- Auth handling ----------
-    # ServerApp.token (classic)
-    if [[ -n "${JUPYTER_TOKEN}" ]]; then
-      args+=(--ServerApp.token="${JUPYTER_TOKEN}")
-    else
-      args+=(--ServerApp.token='')
-    fi
-
-    # ServerApp.password (classic)
-    if [[ -n "${JUPYTER_PASSWORD}" ]]; then
-      args+=(--ServerApp.password="${JUPYTER_PASSWORD}")
-    else
-      args+=(--ServerApp.password='')
-    fi
-
-    # IdentityProvider.token (new path in Jupyter Server 2)
-    if [[ -n "${JUPYTER_IDENTITY_TOKEN}" ]]; then
-      args+=(--IdentityProvider.token="${JUPYTER_IDENTITY_TOKEN}")
-    else
-      args+=(--IdentityProvider.token='')
-    fi
-
-    # Also set NotebookApp.* for extra compatibility (ignored by modern server but harmless)
-    if [[ -n "${JUPYTER_TOKEN}" ]]; then
-      args+=(--NotebookApp.token="${JUPYTER_TOKEN}")
-    else
-      args+=(--NotebookApp.token='')
-    fi
-    if [[ -n "${JUPYTER_PASSWORD}" ]]; then
-      args+=(--NotebookApp.password="${JUPYTER_PASSWORD}")
-    else
-      args+=(--NotebookApp.password='')
-    fi
-    # -----------------------------------
-
-    # XSRF toggle (disabled by default for RunPod proxy)
-    if [[ "${JUPYTER_DISABLE_XSRF,,}" == "true" ]]; then
-      args+=(--ServerApp.disable_check_xsrf=True)
-      log "Starting JupyterLab on :${JUPYTER_PORT} (no auth if envs empty; CORS open to RunPod; XSRF disabled)"
-    else
-      log "Starting JupyterLab on :${JUPYTER_PORT} (CORS open to RunPod; XSRF enabled)"
-    fi
-
-    # Launch
-    python3 -m jupyterlab "${args[@]}" &
-    JUPYTER_PID=$!
-    log "Jupyter PID: ${JUPYTER_PID}"
-  else
+  if [[ "${RUN_JUPYTER,,}" != "true" ]]; then
     log "RUN_JUPYTER=false — skipping Jupyter."
+    return
   fi
+
+  # Build Jupyter args (modern ServerApp flags)
+  local args=(
+    --ServerApp.ip=0.0.0.0
+    --ServerApp.port="${JUPYTER_PORT}"
+    --ServerApp.allow_root=True
+    --ServerApp.root_dir=/workspace
+    --ServerApp.preferred_dir=/workspace
+    --ServerApp.base_url=/
+    --ServerApp.trust_xheaders=True
+    --ServerApp.allow_remote_access=True
+    --ServerApp.allow_origin_pat="${JUPYTER_ALLOW_ORIGIN_PAT}"
+    --no-browser
+  )
+
+  # Auth OFF unless you explicitly set envs
+  if [[ -n "${JUPYTER_TOKEN}" ]]; then
+    args+=(--ServerApp.token="${JUPYTER_TOKEN}")
+  else
+    args+=(--ServerApp.token=)
+  fi
+  if [[ -n "${JUPYTER_PASSWORD}" ]]; then
+    args+=(--ServerApp.password="${JUPYTER_PASSWORD}")
+  else
+    args+=(--ServerApp.password=)
+  fi
+  if [[ -n "${JUPYTER_IDENTITY_TOKEN}" ]]; then
+    args+=(--IdentityProvider.token="${JUPYTER_IDENTITY_TOKEN}")
+  else
+    args+=(--IdentityProvider.token=)
+  fi
+
+  # Compatibility flags (ignored by modern server but harmless)
+  [[ -n "${JUPYTER_TOKEN}"    ]] && args+=(--NotebookApp.token="${JUPYTER_TOKEN}")    || args+=(--NotebookApp.token=)
+  [[ -n "${JUPYTER_PASSWORD}" ]] && args+=(--NotebookApp.password="${JUPYTER_PASSWORD}") || args+=(--NotebookApp.password=)
+
+  # Disable XSRF for proxy friendliness (prevents 403/cross-origin websocket issues)
+  if [[ "${JUPYTER_DISABLE_XSRF,,}" == "true" ]]; then
+    args+=(--ServerApp.disable_check_xsrf=True)
+    log "Starting JupyterLab :${JUPYTER_PORT} — auth disabled, CORS open to RunPod, XSRF disabled."
+  else
+    log "Starting JupyterLab :${JUPYTER_PORT} — CORS open to RunPod, XSRF enabled."
+  fi
+
+  # Launch
+  python3 -m jupyterlab "${args[@]}" &
+  JUPYTER_PID=$!
+  log "Jupyter PID: ${JUPYTER_PID}"
 }
 
 case "${1:-start-all}" in
