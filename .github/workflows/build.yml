@@ -11,24 +11,44 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Login to NVIDIA NGC (nvcr.io)
+      # Login to NVIDIA NGC (to pull nvcr.io/tritonserver)
+      - name: Login to NVIDIA NGC
         uses: docker/login-action@v3
         with:
           registry: nvcr.io
-          username: ${{ secrets.NGC_USERNAME }}   # $oauthtoken
-          password: ${{ secrets.NGC_API_KEY }}    # your API key
+          username: ${{ secrets.NGC_USERNAME }}   # usually "$oauthtoken"
+          password: ${{ secrets.NGC_API_KEY }}    # your NGC API key
 
+      # Login to Docker Hub (to push final image)
       - name: Login to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build & Push
+      # Generate image tags & labels automatically
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ secrets.DOCKERHUB_USERNAME }}/runpod-triton-slim
+          tags: |
+            type=raw,value=latest
+            type=sha  # also push with git SHA
+
+      # Set up Buildx
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and Push
         uses: docker/build-push-action@v6
         with:
           context: .
-          push: true
-          tags: ${{ secrets.DOCKERHUB_USERNAME }}/runpod-triton-slim:latest
+          platforms: linux/amd64    # Triton supports x86_64
           build-args: |
             TRITON_VERSION=24.09
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
